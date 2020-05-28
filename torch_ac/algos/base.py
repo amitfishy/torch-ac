@@ -101,6 +101,7 @@ class BaseAlgo(ABC):
         self.log_return = [0] * self.num_procs
         self.log_reshaped_return = [0] * self.num_procs
         self.log_num_frames = [0] * self.num_procs
+        self.step_counter = [0] * self.num_procs
 
     def collect_experiences(self):
         """Collects rollouts and computes advantages.
@@ -136,6 +137,8 @@ class BaseAlgo(ABC):
 
             obs, reward, done, _ = self.env.step(action.cpu().numpy())
 
+            self.step_counter = [x+1 for x in self.step_counter]
+
             # Update experiences values
 
             self.obss[i] = self.obs
@@ -153,13 +156,17 @@ class BaseAlgo(ABC):
                     for obs_, action_, reward_, done_ in zip(obs, action, reward, done)
                 ], device=self.device)
             else:
-                self.rewards[i] = torch.tensor(reward, device=self.device)
+                self.rewards[i] = torch.tensor(reward, device=self.device, dtype=torch.float)
             self.log_probs[i] = dist.log_prob(action)
+
+            # get discounts
+            discounts = [self.discount**(x-1) for x in self.step_counter]
+            discounts = torch.tensor(discounts, device=self.device, dtype=torch.float)
 
             # Update log values
 
-            self.log_episode_return += torch.tensor(reward, device=self.device, dtype=torch.float)
-            self.log_episode_reshaped_return += self.rewards[i]
+            self.log_episode_return += torch.tensor(reward, device=self.device, dtype=torch.float) * discounts
+            self.log_episode_reshaped_return += self.rewards[i] * discounts
             self.log_episode_num_frames += torch.ones(self.num_procs, device=self.device)
 
             for i, done_ in enumerate(done):
@@ -168,6 +175,7 @@ class BaseAlgo(ABC):
                     self.log_return.append(self.log_episode_return[i].item())
                     self.log_reshaped_return.append(self.log_episode_reshaped_return[i].item())
                     self.log_num_frames.append(self.log_episode_num_frames[i].item())
+                    self.step_counter[i] = 0
 
             self.log_episode_return *= self.mask
             self.log_episode_reshaped_return *= self.mask
@@ -222,7 +230,6 @@ class BaseAlgo(ABC):
         # Log some values
 
         keep = max(self.log_done_counter, self.num_procs)
-
         logs = {
             "return_per_episode": self.log_return[-keep:],
             "reshaped_return_per_episode": self.log_reshaped_return[-keep:],
